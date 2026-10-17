@@ -1,8 +1,10 @@
 /**
  * @file main.c
- * @brief 从板 N2：8 路输出，取 DATA data[1]（bits 8–15）为命令
+ * @brief 从板 N2（board1）：8 路，读 KEY_STATE 大端位图本板字节
  *
- * 键 9–16 ↔ data[1] 的 bit0–bit7 ↔ s_pins[0..7]
+ * CAN ID=0x100 DLC=4：data = BE(bitmap)
+ *   本板取 data[2] = bits15..8（键 9–16）
+ * 兼容旧 DLC=8：仍取 data[1]
  */
 
 #include <stdio.h>
@@ -31,17 +33,18 @@
 #define MSG_DEVICE_REPORT        0x81
 
 #define NODE_ID                  2
-#define DATA_BYTE_INDEX          1   /* 本板取 data[1] */
+#define BOARD_INDEX              1   /* N2=board1 → data[3-1]=data[2] */
+#define DATA_BYTE_INDEX_LEGACY   1   /* 旧 DLC=8 LE 布局 */
 #define OUTPUT_CHANNEL_COUNT     8
 #define FW_VER_MAJOR             1
-#define FW_VER_MINOR             2
+#define FW_VER_MINOR             3
 
 #define RECEIVE_WAIT_MS          50
 #define HEARTBEAT_PERIOD_MS      1000
 
 static const gpio_num_t s_pins[OUTPUT_CHANNEL_COUNT] = {
-    GPIO_NUM_1, GPIO_NUM_2, GPIO_NUM_4, GPIO_NUM_5,
-    GPIO_NUM_6, GPIO_NUM_7, GPIO_NUM_8, GPIO_NUM_11
+    GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6, GPIO_NUM_7,
+    GPIO_NUM_8, GPIO_NUM_11, GPIO_NUM_12, GPIO_NUM_13
 };
 
 static const char *TAG = "NODE_N2";
@@ -88,7 +91,7 @@ static void apply_mask8(uint8_t mask)
     for (int i = 0; i < OUTPUT_CHANNEL_COUNT; i++) {
         gpio_set_level(s_pins[i], (mask >> i) & 0x1);
     }
-    ESP_LOGI(TAG, "CMD=0x%02X (data[%d], keys 9-16)", s_mask, DATA_BYTE_INDEX);
+    ESP_LOGI(TAG, "CMD=0x%02X (board%d)", s_mask, BOARD_INDEX);
 }
 
 static esp_err_t can_init(void)
@@ -131,8 +134,12 @@ static esp_err_t send_device_report(void)
 
 static void handle_host_frame(const twai_message_t *m)
 {
+    if (m->data_length_code == 4) {
+        apply_mask8(m->data[3 - BOARD_INDEX]);
+        return;
+    }
     if (m->data_length_code == 8) {
-        apply_mask8(m->data[DATA_BYTE_INDEX]);
+        apply_mask8(m->data[DATA_BYTE_INDEX_LEGACY]);
         return;
     }
     if (m->data_length_code == 2 && m->data[0] == MSG_DISCOVER) {
@@ -161,7 +168,7 @@ void app_main(void)
         return;
     }
 
-    ESP_LOGI(TAG, "N%d: 8ch, use data[%d]", NODE_ID, DATA_BYTE_INDEX);
+    ESP_LOGI(TAG, "N%d: 8ch, DLC4 data[%d]", NODE_ID, 3 - BOARD_INDEX);
 
     uint32_t rx_count = 0;
     TickType_t last_hb = xTaskGetTickCount();
